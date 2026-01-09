@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import os
-import resource
 import sys
 
 import psutil
@@ -12,6 +11,13 @@ import tiktoken
 from .adapters import get_tokenizer
 from .common import FIXTURES_PATH, gpt2_bytes_to_unicode
 
+import platform
+
+if platform.system() != "Windows":
+    import resource
+else:
+    resource = None
+
 VOCAB_PATH = FIXTURES_PATH / "gpt2_vocab.json"
 MERGES_PATH = FIXTURES_PATH / "gpt2_merges.txt"
 
@@ -19,6 +25,9 @@ MERGES_PATH = FIXTURES_PATH / "gpt2_merges.txt"
 def memory_limit(max_mem):
     def decorator(f):
         def wrapper(*args, **kwargs):
+            if resource is None:
+                return f(*args, **kwargs)
+
             process = psutil.Process(os.getpid())
             prev_limits = resource.getrlimit(resource.RLIMIT_AS)
             resource.setrlimit(resource.RLIMIT_AS, (process.memory_info().rss + max_mem, -1))
