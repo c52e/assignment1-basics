@@ -178,8 +178,6 @@ def bpe_tokenizer(
         merges.append((tokens_array[pair_to_merge[0]], tokens_array[pair_to_merge[1]]))
         new_token_bytes = b''.join(tokens_array[token] for token in pair_to_merge)
         tokens_array.append(new_token_bytes)
-        # if len(most_common_pairs) > 1:
-        #     input(f'{[b''.join(tokens_array[token] for token in pair_to_merge) for pair_to_merge in most_common_pairs]} {new_token_bytes} {max_frequency}  {len(tokens_array)}')
         pair_info = token_pair_count.pop(pair_to_merge)
         changed_pairs = set()
         for node_a in pair_info.positions:
@@ -190,39 +188,29 @@ def bpe_tokenizer(
             node_p = node_a.pre
             node_q = node_b.next
 
+            def modify_pair_info(pair, node, delta):
+                pair_info = token_pair_count[pair]
+                pair_info.count += delta
+                assert delta != 0
+                changed_pairs.add(pair)
+                if delta > 0:
+                    pair_info.positions.add(node)
+                else:
+                    pair_info.positions.remove(node)
+                    if pair_info.count == 0:
+                        token_pair_count.pop(pair)
+
             if node_p != node_a.head:
                 left_pair = (node_p.value, node_a.value)
                 if left_pair != pair_to_merge:
-                    left_pair = (node_p.value, node_a.value)
-                    left_pair_info = token_pair_count[left_pair]
-                    left_pair_info.count -= node_a.head.count
-                    changed_pairs.add(left_pair)
-                    left_pair_info.positions.remove(node_p)
-                    if left_pair_info.count == 0:
-                        token_pair_count.pop(left_pair)
-
-                new_left_pair = (node_p.value, new_token)
-                new_left_pair_info = token_pair_count[new_left_pair]
-                new_left_pair_info.count += node_a.head.count
-                changed_pairs.add(new_left_pair)
-                new_left_pair_info.positions.add(node_p)
+                    modify_pair_info(left_pair, node_p, -node_a.head.count)
+                modify_pair_info((node_p.value, new_token), node_p, node_a.head.count)
             
             if node_q:
                 right_pair = (node_b.value, node_q.value)
                 if right_pair != pair_to_merge:
-                    right_pair = (node_b.value, node_q.value)
-                    right_pair_info = token_pair_count[right_pair]
-                    right_pair_info.count -= node_a.head.count
-                    changed_pairs.add(right_pair)
-                    right_pair_info.positions.remove(node_b)
-                    if right_pair_info.count == 0:
-                        token_pair_count.pop(right_pair)
-
-                new_right_pair = (new_token, node_q.value)
-                new_right_pair_info = token_pair_count[new_right_pair]
-                new_right_pair_info.count += node_a.head.count
-                changed_pairs.add(new_right_pair)
-                new_right_pair_info.positions.add(node_a)
+                    modify_pair_info(right_pair, node_b, -node_a.head.count)
+                modify_pair_info((new_token, node_q.value), node_a, node_a.head.count)
 
             node_a.value = new_token
             node_a.next = node_q
@@ -231,8 +219,7 @@ def bpe_tokenizer(
             node_b.is_valid = False
         for pair in changed_pairs:
             heapq.heappush(pair_heap, (-token_pair_count[pair].count, PairKey(pair), pair))
-        #print(tokens_count[:10])
-        #print(tokens_map)
+        
     tokens_array += [token.encode("utf-8") for token in special_tokens]
     vocab = {i: token for i, token in enumerate(tokens_array)}
     return vocab, merges
