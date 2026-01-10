@@ -133,7 +133,7 @@ def bpe_tokenizer(
     special_tokens: list[str]
 ) -> tuple[dict[int, bytes], list[tuple[bytes, bytes]]]:
     
-    num_blocks = 32
+    num_blocks = 8192
     is_windows = detect_newline(input_path) == '\r\n'
     split_pattern = re.compile('|'.join(re.escape(token) for token in special_tokens))
     tokens_array = list(bytes([i]) for i in range(0, 256))
@@ -180,25 +180,24 @@ def bpe_tokenizer(
         tokens_array.append(new_token_bytes)
         pair_info = token_pair_count.pop(pair_to_merge)
         changed_pairs = set()
+        def modify_pair_info(pair, node, delta):
+            pair_info = token_pair_count[pair]
+            pair_info.count += delta
+            assert delta != 0
+            changed_pairs.add(pair)
+            if delta > 0:
+                pair_info.positions.add(node)
+            else:
+                pair_info.positions.remove(node)
+                if pair_info.count == 0:
+                    token_pair_count.pop(pair)
         for node_a in pair_info.positions:
-            if not node_a.is_valid:
+            node_b = node_a.next
+            if not node_a.is_valid or not node_b:
                 continue
 
-            node_b = node_a.next
             node_p = node_a.pre
             node_q = node_b.next
-
-            def modify_pair_info(pair, node, delta):
-                pair_info = token_pair_count[pair]
-                pair_info.count += delta
-                assert delta != 0
-                changed_pairs.add(pair)
-                if delta > 0:
-                    pair_info.positions.add(node)
-                else:
-                    pair_info.positions.remove(node)
-                    if pair_info.count == 0:
-                        token_pair_count.pop(pair)
 
             if node_p != node_a.head:
                 left_pair = (node_p.value, node_a.value)
@@ -225,6 +224,6 @@ def bpe_tokenizer(
     return vocab, merges
 
 if __name__ == "__main__":
-    vocab, merges = bpe_tokenizer('./data/TinyStoriesV2-GPT4-train.txt', 10000, ['<|endoftext|>'])
+    vocab, merges = bpe_tokenizer('./data/owt_train.txt', 32000, ['<|endoftext|>'])
     print(vocab, merges[:32])
-
+    print('longest token: ', max(vocab.values(), key=lambda byte: len(byte)))
