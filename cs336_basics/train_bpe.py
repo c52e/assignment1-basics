@@ -2,8 +2,9 @@ import os
 from typing import BinaryIO
 import regex as re
 from itertools import takewhile
-from collections import Counter
+from collections import Counter, defaultdict
 from concurrent.futures import ProcessPoolExecutor
+import heapq
 
 def find_any(chunk, patterns):
     for pattern in patterns:
@@ -58,18 +59,6 @@ def find_chunk_boundaries(
     # Make sure all boundaries are unique, but might be fewer than desired_num_chunks
     return sorted(set(chunk_boundaries))
 
-def merge_tokens(tokens, pair, new_token):
-    new_tokens = []
-    i = 0
-    while i < len(tokens):
-        if tokens[i] == pair[0] and i + 1 < len(tokens) and tokens[i+1] == pair[1]:
-            new_tokens.append(new_token)
-            i += 2
-        else:
-            new_tokens.append(tokens[i])
-            i += 1
-    return new_tokens
-
 def detect_newline(file_path):
     with open(file_path, 'r', newline='', encoding='utf-8') as f:
         f.readline()
@@ -109,6 +98,35 @@ def main_parallel(file_path, boundaries, split_pattern, is_windows):
 
     return final_words_count
 
+class ListNode:
+    def __init__(self, value, head, pre=None, next=None):
+        self.value = value
+        self.head = head
+        self.pre = pre
+        self.next = next
+        self.is_valid = True
+
+class WordInfo:
+    def __init__(self, next: ListNode, count: int):
+        self.next = next
+        self.count = count
+
+
+def create_linked_list(token_bytes, head: WordInfo):
+    front = ListNode(token_bytes[0], head, head)
+    current = front
+    for byte in token_bytes[1:]:
+        new_node = ListNode(byte, head, front)
+        current.next = new_node
+        new_node.pre = current
+        current = new_node
+    return front
+
+class PairInfo:
+    def __init__(self):
+        self.positions = set()
+        self.count = 0
+
 def bpe_tokenizer(
     input_path: str | os.PathLike,
     vocab_size: int,
@@ -119,36 +137,102 @@ def bpe_tokenizer(
     is_windows = detect_newline(input_path) == '\r\n'
     split_pattern = re.compile('|'.join(re.escape(token) for token in special_tokens))
     tokens_array = list(bytes([i]) for i in range(0, 256))
+    class PairKey:
+        def __init__(self, pair):
+            self.value = tuple(tokens_array[token] for token in pair) # Use tuple instead of join with b''
+        def __lt__(self, other):
+            return self.value > other.value
 
     with open(input_path, "rb") as f:
         boundaries = find_chunk_boundaries(f, num_blocks, [token.encode("utf-8") for token in special_tokens])
 
     words_count = main_parallel(input_path, boundaries, split_pattern, is_windows)
-    tokens_count = [(tuple(word.encode('utf-8')), count) for word, count in words_count.items() ]
+    tokens_count = [WordInfo(None, 0) for _ in range(len(words_count))]
+    for i, (word, count) in enumerate(words_count.items()):
+        tokens_count[i].next = create_linked_list(word.encode('utf-8'), tokens_count[i])
+        tokens_count[i].count = count
     #print(tokens_count)
 
     merges = []
+    token_pair_count = defaultdict(lambda: PairInfo())
+    pair_heap = []
+    for word_data in tokens_count:
+        current = word_data.next
+        while current and current.next:
+            pair = (current.value, current.next.value)
+            pair_info = token_pair_count[pair]
+            pair_info.count += word_data.count
+            pair_info.positions.add(current)
+            current = current.next
+    for pair, info in token_pair_count.items():
+        heapq.heappush(pair_heap, (-info.count, PairKey(pair), pair))
     while len(tokens_array) < vocab_size - len(special_tokens):
         if len(tokens_array) % 100 == 0:
             print(f"Vocabulary size: {len(tokens_array)} / {vocab_size}")
-        token_pair_count = {}
-        for tokens, count in tokens_count:
-            for i in range(len(tokens) - 1):
-                pair = (tokens[i], tokens[i+1])
-                token_pair_count[pair] = token_pair_count.get(pair, 0) + count
-        sorted_pairs = sorted(token_pair_count.items(), key=lambda item: item[1], reverse=True)
-        max_frequency = sorted_pairs[0][1]
-        most_common_pairs = [x[0] for x in takewhile(lambda x: x[1] == max_frequency, sorted_pairs)]
-        pair_to_merge = max(most_common_pairs, key=lambda pair: tuple(tokens_array[token] for token in pair)) # Use tuple instead of join with b''
+            
+        while True:
+            neg_count, _, pair_to_merge = heapq.heappop(pair_heap)
+            if neg_count == -token_pair_count[pair_to_merge].count:
+                break
+        new_token = len(tokens_array)
+        merges.append((tokens_array[pair_to_merge[0]], tokens_array[pair_to_merge[1]]))
         new_token_bytes = b''.join(tokens_array[token] for token in pair_to_merge)
+        tokens_array.append(new_token_bytes)
         # if len(most_common_pairs) > 1:
         #     input(f'{[b''.join(tokens_array[token] for token in pair_to_merge) for pair_to_merge in most_common_pairs]} {new_token_bytes} {max_frequency}  {len(tokens_array)}')
-        for i in range(len(tokens_count)):
-            tokens_count[i] = (merge_tokens(tokens_count[i][0], pair_to_merge, len(tokens_array)), tokens_count[i][1])
+        pair_info = token_pair_count.pop(pair_to_merge)
+        changed_pairs = set()
+        for node_a in pair_info.positions:
+            if not node_a.is_valid:
+                continue
+
+            node_b = node_a.next
+            node_p = node_a.pre
+            node_q = node_b.next
+
+            if node_p != node_a.head:
+                left_pair = (node_p.value, node_a.value)
+                if left_pair != pair_to_merge:
+                    left_pair = (node_p.value, node_a.value)
+                    left_pair_info = token_pair_count[left_pair]
+                    left_pair_info.count -= node_a.head.count
+                    changed_pairs.add(left_pair)
+                    left_pair_info.positions.remove(node_p)
+                    if left_pair_info.count == 0:
+                        token_pair_count.pop(left_pair)
+
+                new_left_pair = (node_p.value, new_token)
+                new_left_pair_info = token_pair_count[new_left_pair]
+                new_left_pair_info.count += node_a.head.count
+                changed_pairs.add(new_left_pair)
+                new_left_pair_info.positions.add(node_p)
+            
+            if node_q:
+                right_pair = (node_b.value, node_q.value)
+                if right_pair != pair_to_merge:
+                    right_pair = (node_b.value, node_q.value)
+                    right_pair_info = token_pair_count[right_pair]
+                    right_pair_info.count -= node_a.head.count
+                    changed_pairs.add(right_pair)
+                    right_pair_info.positions.remove(node_b)
+                    if right_pair_info.count == 0:
+                        token_pair_count.pop(right_pair)
+
+                new_right_pair = (new_token, node_q.value)
+                new_right_pair_info = token_pair_count[new_right_pair]
+                new_right_pair_info.count += node_a.head.count
+                changed_pairs.add(new_right_pair)
+                new_right_pair_info.positions.add(node_a)
+
+            node_a.value = new_token
+            node_a.next = node_q
+            if node_q:
+                node_q.pre = node_a
+            node_b.is_valid = False
+        for pair in changed_pairs:
+            heapq.heappush(pair_heap, (-token_pair_count[pair].count, PairKey(pair), pair))
         #print(tokens_count[:10])
         #print(tokens_map)
-        merges.append((tokens_array[pair_to_merge[0]], tokens_array[pair_to_merge[1]]))
-        tokens_array.append(new_token_bytes)
     tokens_array += [token.encode("utf-8") for token in special_tokens]
     vocab = {i: token for i, token in enumerate(tokens_array)}
     return vocab, merges
