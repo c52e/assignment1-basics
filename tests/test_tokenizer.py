@@ -17,6 +17,13 @@ if platform.system() != "Windows":
     import resource
 else:
     resource = None
+    import builtins
+    old_open = builtins.open
+    def hooked_open(file, mode = "r", *args, **kwargs):
+        if 'encoding' not in kwargs and 'b' not in mode:
+            kwargs['encoding'] = 'utf-8'
+        return old_open(file, mode, *args, **kwargs)
+    builtins.open = hooked_open
 
 VOCAB_PATH = FIXTURES_PATH / "gpt2_vocab.json"
 MERGES_PATH = FIXTURES_PATH / "gpt2_merges.txt"
