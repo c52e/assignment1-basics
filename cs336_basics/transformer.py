@@ -93,6 +93,7 @@ class RotaryPositionalEmbedding(torch.nn.Module):
         def get_cos_sin(param):
             res = param[token_positions]
             res = einx.rearrange('... k->... (k 2)', res)
+            res = res.unsqueeze(1) 
             return res
         cos = get_cos_sin(self.cos)
         sin = get_cos_sin(self.sin)
@@ -207,7 +208,7 @@ class TransformerLM(torch.nn.Module):
         self.token_embeddings = Embedding(vocab_size, d_model, device=device, dtype=dtype)
         self.layers = torch.nn.ModuleList([TransformerBlock(d_model, num_heads, d_ff, context_length, theta, device=device, dtype=dtype) for _ in range(num_layers)])
         self.ln_final = RMSNorm(d_model, device=device, dtype=dtype)
-        self.lm_head = Linear(d_model, vocab_size)
+        self.lm_head = Linear(d_model, vocab_size, device=device, dtype=dtype)
 
     def forward(self, in_indices: torch.Tensor, token_positions: torch.Tensor | None=None) -> torch.Tensor:
         x = self.token_embeddings(in_indices)

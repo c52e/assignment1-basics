@@ -15,10 +15,11 @@ dependencies = [
     "submitit>=1.5.2", # job submission for SLURM
     "tiktoken>=0.9.0",
     "torch~=2.6.0; sys_platform != 'darwin' or platform_machine != 'x86_64'",
-    "torch~=2.2.2; sys_platform == 'darwin' and platform_machine == 'x86_64'", # Intel Macs
+    #"torch~=2.2.2; sys_platform == 'darwin' and platform_machine == 'x86_64'", # Intel Macs
     "tqdm>=4.67.1",
     "wandb>=0.19.7",
     "ty>=0.0.1a16",
+    "torchinfo",
 ]
 
 [build-system]
@@ -50,3 +51,11 @@ extend-select = ["UP"]
 ignore = [
     "F722"
 ]
+
+[[tool.uv.index]]
+name = "pytorch-cu124"
+url = "https://download.pytorch.org/whl/cu124"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu124" }
