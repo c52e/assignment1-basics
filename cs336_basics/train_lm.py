@@ -66,12 +66,12 @@ def lr_cosine_schedule(
 def gradient_clipping(parameters: Iterable[torch.nn.Parameter], max_l2_norm: float):
     params = list(parameters)
     eps = 1e-6
-    l2_sum = 0
+    l2_sum = torch.tensor(0.0, device=params[0].device)
     for p in params:
         if p.grad is None:
             continue
-        l2_sum += torch.sum(p.grad * p.grad).cpu()
-    l2_norm = math.sqrt(l2_sum)
+        l2_sum += torch.sum(p.grad * p.grad).item()
+    l2_norm = math.sqrt(l2_sum.cpu())
     if l2_norm < max_l2_norm:
         return
     for p in params:
