@@ -6,6 +6,7 @@ import numpy.typing as npt
 import os
 import typing
 import re
+import pickle
 from cs336_basics import *
 
 def data_loading(
@@ -35,12 +36,13 @@ def save_checkpoint(
 def load_checkpoint(
     src: str | os.PathLike | typing.BinaryIO | typing.IO[bytes],
     model: torch.nn.Module,
-    optimizer: torch.optim.Optimizer
+    optimizer: torch.optim.Optimizer | None = None,
 ) -> int:
     data = torch.load(src)
     raw_model = model._orig_mod if hasattr(model, "_orig_mod") else model
     raw_model.load_state_dict(data['model'])
-    optimizer.load_state_dict(data['optimizer'])
+    if optimizer is not None:
+        optimizer.load_state_dict(data['optimizer'])
     return data['iteration']
 
 
@@ -78,6 +80,11 @@ def train_model(train_data_path: str | os.PathLike,
                 checkpoint_root: str | os.PathLike | None = None,
                 dtype: torch.dtype | None = None,
                 device: torch.device | None = None):
+    if not os.path.exists(checkpoint_root):
+        os.makedirs(checkpoint_root)
+    with open(os.path.join(checkpoint_root, f'params.pkl'), 'wb') as f:
+        pickle.dump((params, adamw_params, dtype, device), f)
+
     plotlosses = PlotLosses()
     x = np.memmap(train_data_path, dtype=np.uint16, mode='r')
     x_val = np.memmap(val_data_path, dtype=np.uint16, mode='r')
@@ -140,8 +147,23 @@ def train_model(train_data_path: str | os.PathLike,
             print(f"[{iteration}/{num_iterations}] Loss: {loss.item():.4f} | Val Loss: {val_loss:.4f}")
             del val_logits, val_loss
         print(f"[{iteration}/{num_iterations}]")
-        if iteration % checkpoint_interval == 0:
-            if not os.path.exists(checkpoint_root):
-                os.makedirs(checkpoint_root)
+        if iteration % checkpoint_interval == 0 or iteration == num_iterations:
             save_checkpoint(model, optimizer, iteration, os.path.join(checkpoint_root, f'checkpoint_iter_{iteration}.pt'))
         
+def load_model_from_checkpoint(params_path: str | os.PathLike, checkpoint_path: str | os.PathLike) -> TransformerLM:
+    with open(params_path, 'rb') as f:
+        params, _, dtype, device = pickle.load(f)
+    model = TransformerLM(
+        vocab_size=params.vocab_size,
+        context_length=params.context_length,
+        num_layers=params.num_layers,
+        d_model=params.d_model,
+        num_heads=params.num_heads,
+        d_ff=params.d_ff,
+        theta=params.theta,
+        dtype=dtype,
+        device=device
+    )
+    load_checkpoint(checkpoint_path, model)
+    return model
+

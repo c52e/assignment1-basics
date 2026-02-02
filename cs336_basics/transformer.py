@@ -205,6 +205,7 @@ class TransformerLM(torch.nn.Module):
         dtype: torch.dtype | None = None,
     ):
         super().__init__()
+        self.context_length = context_length
         self.token_embeddings = Embedding(vocab_size, d_model, device=device, dtype=dtype)
         self.layers = torch.nn.ModuleList([TransformerBlock(d_model, num_heads, d_ff, context_length, theta, device=device, dtype=dtype) for _ in range(num_layers)])
         self.ln_final = RMSNorm(d_model, device=device, dtype=dtype)
