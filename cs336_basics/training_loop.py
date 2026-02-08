@@ -62,6 +62,10 @@ class AdamWParams:
     weight_decay: float
     betas: tuple[float, float] = (0.9, 0.999)
     eps: float = 1e-8
+    lr_final: float | None = None
+    warmup_ratio: float = 0.0
+    cosine_cycle_ratio: float = 0.0
+
 
 torch.set_float32_matmul_precision('high')
 import torch._dynamo
@@ -80,10 +84,11 @@ def train_model(train_data_path: str | os.PathLike,
                 checkpoint_root: str | os.PathLike | None = None,
                 dtype: torch.dtype | None = None,
                 device: torch.device | None = None):
-    if not os.path.exists(checkpoint_root):
-        os.makedirs(checkpoint_root)
-    with open(os.path.join(checkpoint_root, f'params.pkl'), 'wb') as f:
-        pickle.dump((params, adamw_params, dtype, device), f)
+    if checkpoint_root is not None:
+        if not os.path.exists(checkpoint_root):
+            os.makedirs(checkpoint_root)
+        with open(os.path.join(checkpoint_root, f'params.pkl'), 'wb') as f:
+            pickle.dump((params, adamw_params, dtype, device), f)
 
     plotlosses = PlotLosses()
     x = np.memmap(train_data_path, dtype=np.uint16, mode='r')
@@ -126,6 +131,16 @@ def train_model(train_data_path: str | os.PathLike,
         )
         loss.backward()
         gradient_clipping(model.parameters(), max_l2_norm=1.0)
+        if adamw_params.lr_final is not None:
+            lr = lr_cosine_schedule(
+                iteration,
+                adamw_params.lr,
+                adamw_params.lr_final,
+                adamw_params.warmup_ratio * num_iterations,
+                adamw_params.cosine_cycle_ratio * num_iterations
+            )
+            for param_group in optimizer.param_groups:
+                param_group['lr'] = lr
         optimizer.step()
         if (iteration-1) % log_interval == 0:
             val_loss_accum = 0
@@ -146,8 +161,12 @@ def train_model(train_data_path: str | os.PathLike,
             plotlosses.send()
             print(f"[{iteration}/{num_iterations}] Loss: {loss.item():.4f} | Val Loss: {val_loss:.4f}")
             del val_logits, val_loss
+        if math.isnan(loss.cpu().item()):
+            print('Loss is NaN. Stopping training.')
+            return
+
         print(f"[{iteration}/{num_iterations}]")
-        if iteration % checkpoint_interval == 0 or iteration == num_iterations:
+        if checkpoint_root is not None and (iteration % checkpoint_interval == 0 or iteration == num_iterations):
             save_checkpoint(model, optimizer, iteration, os.path.join(checkpoint_root, f'checkpoint_iter_{iteration}.pt'))
         
 def load_model_from_checkpoint(params_path: str | os.PathLike, checkpoint_path: str | os.PathLike) -> TransformerLM:
