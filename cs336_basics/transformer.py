@@ -3,6 +3,14 @@ import math
 import einx
 from jaxtyping import Bool, Float, Int
 from torch import Tensor
+from dataclasses import dataclass
+
+@dataclass
+class TransformerArchParams:
+    remove_rmsnorm: bool = False
+    post_norm: bool = False
+    use_nope: bool = False
+    use_silu: bool = False
 
 class Linear(torch.nn.Module):
     def __init__(self,
@@ -72,6 +80,23 @@ class SwiGLU(torch.nn.Module):
         result = self.w2(silu_w1_x * w3_x)
         return result
 
+class SiLU(torch.nn.Module):
+    def __init__(self,
+        d_model: int,
+        d_ff: int,
+        device: torch.device | None = None,
+        dtype: torch.dtype | None = None
+    ):
+        super().__init__()
+        self.w1 = Linear(d_model, d_ff, device=device, dtype=dtype)
+        self.w2 = Linear(d_ff, d_model, device=device, dtype=dtype)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        w1_x = self.w1(x)
+        silu_w1_x = w1_x / (1.0 + torch.exp(-w1_x))
+        result = self.w2(silu_w1_x)
+        return result
+
 class RotaryPositionalEmbedding(torch.nn.Module):
     def __init__(self,
         theta: float,
@@ -133,6 +158,7 @@ class MultiheadSelfAttention(torch.nn.Module):
         theta: float,
         device: torch.device | None = None,
         dtype: torch.dtype | None = None,
+        use_nope: bool = False,
     ):
         super().__init__()
         d_k = d_model // num_heads * num_heads
@@ -144,7 +170,7 @@ class MultiheadSelfAttention(torch.nn.Module):
         self.v_proj = Linear(d_model, d_k, device=device, dtype=dtype)
         self.output_proj = Linear(d_k, d_model, device=device, dtype=dtype)
 
-        self.rope = RotaryPositionalEmbedding(theta, d_model // num_heads, max_seq_len, device=device)
+        self.rope = RotaryPositionalEmbedding(theta, d_model // num_heads, max_seq_len, device=device) if not use_nope else None
         
 
     def forward(self, x: torch.Tensor, token_positions: torch.Tensor | None=None) -> torch.Tensor:
@@ -159,7 +185,7 @@ class MultiheadSelfAttention(torch.nn.Module):
         K = einx.rearrange('... seq_len (h d) -> ... h seq_len d', K, h=self.num_heads)
         V = einx.rearrange('... seq_len (h d) -> ... h seq_len d', V, h=self.num_heads)
 
-        if token_positions is not None:
+        if token_positions is not None and self.rope is not None:
             Q = self.rope(Q, token_positions)
             K = self.rope(K, token_positions)
 
@@ -177,18 +203,23 @@ class TransformerBlock(torch.nn.Module):
         theta: float,
         device: torch.device | None = None,
         dtype: torch.dtype | None = None,
+        arch_params: TransformerArchParams = TransformerArchParams()
     ):
         super().__init__()
-        self.ln1 = RMSNorm(d_model, device=device, dtype=dtype)
-        self.attn = MultiheadSelfAttention(d_model, num_heads, max_seq_len, theta, device=device,dtype=dtype)
-        self.ln2 = RMSNorm(d_model, device=device, dtype=dtype)
-        self.ffn = SwiGLU(d_model, d_ff, device=device,dtype=dtype)
+        self.ln1 = RMSNorm(d_model, device=device, dtype=dtype) if not arch_params.remove_rmsnorm else torch.nn.Identity()
+        self.attn = MultiheadSelfAttention(d_model, num_heads, max_seq_len, theta, device=device,dtype=dtype,use_nope=arch_params.use_nope)
+        self.ln2 = RMSNorm(d_model, device=device, dtype=dtype) if not arch_params.remove_rmsnorm else torch.nn.Identity()
+        self.ffn = SwiGLU(d_model, d_ff, device=device,dtype=dtype) if not arch_params.use_silu else SiLU(d_model, d_ff, device=device,dtype=dtype)
+        self.post_norm = arch_params.post_norm
 
     def forward(self, x: torch.Tensor, token_positions: torch.Tensor | None=None) -> torch.Tensor:
         if token_positions is None:
             seq_len = x.shape[-2]
             batch_size = x.shape[0]
             token_positions = torch.arange(seq_len, device=x.device).unsqueeze(0).expand(batch_size, -1)
+        if self.post_norm:
+            att = self.ln1(x + self.attn(x, token_positions))
+            return self.ln2(att + self.ffn(att))
         att = x + self.attn(self.ln1(x), token_positions)
         return att + self.ffn(self.ln2(att))
 
@@ -203,12 +234,13 @@ class TransformerLM(torch.nn.Module):
         theta: float,
         device: torch.device | None = None,
         dtype: torch.dtype | None = None,
+        arch_params: TransformerArchParams = TransformerArchParams()
     ):
         super().__init__()
         self.context_length = context_length
         self.token_embeddings = Embedding(vocab_size, d_model, device=device, dtype=dtype)
-        self.layers = torch.nn.ModuleList([TransformerBlock(d_model, num_heads, d_ff, context_length, theta, device=device, dtype=dtype) for _ in range(num_layers)])
-        self.ln_final = RMSNorm(d_model, device=device, dtype=dtype)
+        self.layers = torch.nn.ModuleList([TransformerBlock(d_model, num_heads, d_ff, context_length, theta, device=device, dtype=dtype, arch_params=arch_params) for _ in range(num_layers)])
+        self.ln_final = RMSNorm(d_model, device=device, dtype=dtype) if not arch_params.remove_rmsnorm else torch.nn.Identity()
         self.lm_head = Linear(d_model, vocab_size, device=device, dtype=dtype)
 
     def forward(self, in_indices: torch.Tensor, token_positions: torch.Tensor | None=None) -> torch.Tensor:

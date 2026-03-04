@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import glob
 import torch
 import numpy as np
@@ -55,6 +55,7 @@ class TransformerParams:
     num_heads: int
     d_ff: int
     theta: float
+    arch_params: TransformerArchParams = field(default_factory=TransformerArchParams)
 
 @dataclass
 class AdamWParams:
@@ -102,7 +103,8 @@ def train_model(train_data_path: str | os.PathLike,
         d_ff=params.d_ff,
         theta=params.theta,
         dtype=dtype,
-        device=device
+        device=device,
+        arch_params=params.arch_params,
     )
     optimizer = AdamW(
         model.parameters(),
@@ -181,7 +183,8 @@ def load_model_from_checkpoint(params_path: str | os.PathLike, checkpoint_path: 
         d_ff=params.d_ff,
         theta=params.theta,
         dtype=dtype,
-        device=device
+        device=device,
+        arch_params=params.arch_params if hasattr(params, 'arch_params') else TransformerArchParams(),
     )
     load_checkpoint(checkpoint_path, model)
     return model
